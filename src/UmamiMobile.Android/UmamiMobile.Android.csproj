@@ -1,5 +1,6 @@
 <Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
+    <CheckEolTargetFramework>false</CheckEolTargetFramework>
     <TargetFramework>net8.0-android</TargetFramework>
     <SupportedOSPlatformVersion>24</SupportedOSPlatformVersion>
     <OutputType>Exe</OutputType>
@@ -9,7 +10,6 @@
     <AndroidPackageFormat>apk</AndroidPackageFormat>
     <AndroidLinkMode>None</AndroidLinkMode>
     <RootNamespace>UmamiMobile.Android</RootNamespace>
-    <AssemblyName>UmamiMobile</AssemblyName>
   </PropertyGroup>
   <ItemGroup>
     <PackageReference Include="Avalonia.Android" Version="11.3.22" />
