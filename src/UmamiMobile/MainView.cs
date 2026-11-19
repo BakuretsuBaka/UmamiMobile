@@ -94,6 +94,8 @@ namespace UmamiMobile
             return new TabItem
             {
                 Header = title,
+                FontSize = 14,
+                Padding = new Thickness(10, 8),
                 Content = new ScrollViewer { Content = content, HorizontalScrollBarVisibility = Avalonia.Controls.Primitives.ScrollBarVisibility.Disabled },
             };
         }
@@ -163,6 +165,7 @@ namespace UmamiMobile
             _bgm = archive?.Bgm != null && archive.Bgm.Length > 0 ? archive.Bgm : null;
             _pendingAudio = null;
             Refresh();
+            SetStatus("Loaded " + name);
         }
 
         private async Task Save(bool zip)
@@ -583,7 +586,7 @@ namespace UmamiMobile
 
         private static Button SmallBtn(string text)
         {
-            return new Button { Content = text, Padding = new Thickness(12, 6), Margin = new Thickness(0, 0, 6, 6) };
+            return new Button { Content = new TextBlock { Text = text }, Padding = new Thickness(12, 6), Margin = new Thickness(0, 0, 6, 6) };
         }
 
         private void BuildColors()
@@ -679,7 +682,7 @@ namespace UmamiMobile
 
         private static Button Btn(string text)
         {
-            return new Button { Content = text, Padding = new Thickness(14, 10), Margin = new Thickness(0, 0, 8, 8) };
+            return new Button { Content = new TextBlock { Text = text }, Padding = new Thickness(14, 10), Margin = new Thickness(0, 0, 8, 8) };
         }
 
         private static Control Row(params Control[] items)
