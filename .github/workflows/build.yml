@@ -11,6 +11,20 @@ permissions:
   contents: write
 
 jobs:
+  screenshots:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+      - name: Render the UI headlessly
+        run: dotnet run --project tools/Screenshots -c Release -- shots
+      - uses: actions/upload-artifact@v4
+        with:
+          name: screenshots
+          path: shots/*.png
+
   apk:
     runs-on: ubuntu-latest
     steps:
