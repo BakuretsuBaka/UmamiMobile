@@ -48,13 +48,16 @@ namespace UmamiMobile
         private readonly TextBox _nameBox = new TextBox { Watermark = "Theme name" };
         private readonly CheckBox _cropBox = new CheckBox { Content = "Crop pictures to fill the screen (off: stretch)", IsChecked = true };
         private readonly Button _saveZip = Btn("Save ZIP"), _saveBin = Btn("Save body_LZ.bin");
-        private readonly Button _setTop = Btn("Top wallpaper"), _setBottom = Btn("Bottom wallpaper");
+        private readonly Button _setTop = Btn("Top wallpaper"), _setBottom = Btn("Bottom wallpaper"), _setBoth = Btn("Both screens");
         private readonly TabControl _tabs = new TabControl { TabStripPlacement = Dock.Bottom };
         private readonly List<Expander> _colorSets = new List<Expander>();
 
         public MainView()
         {
             var open = Btn("Open theme");
+            var fresh = Btn("New");
+            fresh.Click += (s, e) => NewTheme();
+            _setBoth.Click += async (s, e) => await Guard(SetBothScreens);
             open.Click += async (s, e) => await Guard(OpenTheme);
             _saveZip.Click += async (s, e) => await Guard(() => Save(true));
             _saveBin.Click += async (s, e) => await Guard(() => Save(false));
@@ -64,7 +67,7 @@ namespace UmamiMobile
 
             var header = new StackPanel { Spacing = 6, Margin = new Thickness(16, 12, 16, 4) };
             header.Children.Add(new TextBlock { Text = "Umami", FontSize = 26, FontWeight = FontWeight.Bold });
-            header.Children.Add(Row(open, _saveZip, _saveBin));
+            header.Children.Add(Row(fresh, open, _saveZip, _saveBin));
             header.Children.Add(_status);
             header.Children.Add(_nameBox);
 
@@ -72,7 +75,8 @@ namespace UmamiMobile
             screens.Children.Add(new Border { Background = Brushes.Black, Child = _topImage, CornerRadius = new CornerRadius(4) });
             screens.Children.Add(new Border { Background = Brushes.Black, Child = _bottomImage, CornerRadius = new CornerRadius(4), Width = 280, HorizontalAlignment = HorizontalAlignment.Center });
             screens.Children.Add(_cropBox);
-            screens.Children.Add(Row(_setTop, _setBottom));
+            screens.Children.Add(Row(_setTop, _setBottom, _setBoth));
+            screens.Children.Add(new TextBlock { Text = "Pictures are cropped to the exact screen size automatically. \"Both screens\" splits one picture across the top and bottom screen.", Opacity = 0.7, TextWrapping = TextWrapping.Wrap });
 
             _tabs.Items.Add(Tab("Screens", screens));
             _tabs.Items.Add(Tab("Colours", _colors));
@@ -84,8 +88,58 @@ namespace UmamiMobile
             dock.Children.Add(header);
             dock.Children.Add(_tabs);
             Content = dock;
-            Refresh();
-            SetStatus("Open a theme (.zip or body_LZ.bin) to begin.");
+            NewTheme();
+            SetStatus("Started a new theme. Pick wallpapers, colours and sounds, or open an existing theme.");
+        }
+
+        /// <summary>Starts a blank theme from scratch: a gradient wallpaper on both screens and a full set of colours.</summary>
+        public void NewTheme()
+        {
+            var palette = new uint[] { 0xE8382F, 0xF2A33A, 0x4C7A9E, 0x2F2F36, 0xF5EFE6, 0xB7416E, 0x6AA84F, 0xFFD6E0 };
+            var colors = new CommonColors();
+            var n = 0;
+            foreach (var f in typeof(CommonColors).GetFields(BindingFlags.Public | BindingFlags.Instance))
+            {
+                var set = Activator.CreateInstance(f.FieldType);
+                foreach (var cf in f.FieldType.GetFields(BindingFlags.Public | BindingFlags.Instance))
+                    if (cf.FieldType == typeof(ColorRgb888))
+                        cf.SetValue(set, (ColorRgb888) palette[n++ % palette.Length]);
+                f.SetValue(colors, set);
+            }
+            var theme = new CommonTheme
+            {
+                Colors = colors,
+                Textures = new Textures(),
+                CWAV = new byte[0],
+                Flags = new Flags
+                {
+                    ArrowButtonColor = true, ArrowColor = true, BottomBackgroundInnerColor = true, BottomBackgroundOuterColor = true,
+                    BottomCornerButtonColor = true, CursorColor = true, DemoTextColor = true, FileColor = true, FolderArrowColor = true,
+                    FolderBackgroundColor = true, FolderColor = true, OpenCloseColor = true, TopCornerButtonColor = true,
+                    TopDrawType = TopDrawType.Texture, TopFrameType = TopFrameType.Single,
+                    BottomDrawType = BottomDrawType.Texture, BottomFrameType = BottomFrameType.Single,
+                },
+            };
+            LoadTheme(theme, "New theme", null);
+            ApplyWallpaper(GradientPicture(TopVisible, ScreenHeight, 0xFF8A7A, 0x6A3D8F), true, false);
+            ApplyWallpaper(GradientPicture(BottomVisible, ScreenHeight, 0x3A2E5A, 0xE8382F), false, false);
+            SetStatus("Started a new theme.");
+        }
+
+        private static PixelBuffer GradientPicture(int w, int h, uint from, uint to)
+        {
+            var bgra = new byte[w * h * 4];
+            for (var y = 0; y < h; y++)
+                for (var x = 0; x < w; x++)
+                {
+                    var t = (x / (double) w + y / (double) h) / 2;
+                    var i = (y * w + x) * 4;
+                    bgra[i] = (byte) (((from & 0xFF) * (1 - t)) + ((to & 0xFF) * t));
+                    bgra[i + 1] = (byte) ((((from >> 8) & 0xFF) * (1 - t)) + (((to >> 8) & 0xFF) * t));
+                    bgra[i + 2] = (byte) ((((from >> 16) & 0xFF) * (1 - t)) + (((to >> 16) & 0xFF) * t));
+                    bgra[i + 3] = 255;
+                }
+            return new PixelBuffer(w, h, bgra);
         }
 
         private static TabItem Tab(string title, Control content)
@@ -269,6 +323,21 @@ namespace UmamiMobile
             SetStatus((top ? "Top" : "Bottom") + " wallpaper replaced.");
         }
 
+        private async Task SetBothScreens()
+        {
+            var picked = await Pick("Choose a picture for both screens");
+            if (picked == null)
+                return;
+            PixelBuffer image;
+            using (var ms = new MemoryStream(picked.Value.bytes))
+                image = PixelBuffer.Load(ms);
+            // One picture spanning the top screen over the bottom screen, cropped to fill, then cut into the two screens
+            var all = image.Fit(TopVisible, ScreenHeight * 2, TopVisible, ScreenHeight * 2, _cropBox.IsChecked == true);
+            ApplyWallpaper(all.Crop(0, 0, TopVisible, ScreenHeight), true, false);
+            ApplyWallpaper(all.Crop((TopVisible - BottomVisible) / 2, ScreenHeight, BottomVisible, ScreenHeight), false, false);
+            SetStatus("Picture split across both screens.");
+        }
+
         /// <summary>Fits a picture to the top or bottom screen and writes it into the theme.</summary>
         public void ApplyWallpaper(PixelBuffer image, bool top, bool crop)
         {
@@ -310,7 +379,7 @@ namespace UmamiMobile
         private void Refresh()
         {
             var loaded = _theme != null;
-            _saveZip.IsEnabled = _saveBin.IsEnabled = _setTop.IsEnabled = _setBottom.IsEnabled = _nameBox.IsEnabled = loaded;
+            _saveZip.IsEnabled = _saveBin.IsEnabled = _setTop.IsEnabled = _setBottom.IsEnabled = _setBoth.IsEnabled = _nameBox.IsEnabled = loaded;
             RefreshPreview();
             BuildColors();
             BuildSounds();
