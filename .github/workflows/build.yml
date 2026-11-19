@@ -38,10 +38,21 @@ jobs:
           java-version: 17
       - name: Install the Android workload
         run: dotnet workload install android
-      - name: Create a signing key
+      - name: Prepare the signing key
+        env:
+          KEYSTORE_B64: ${{ secrets.KEYSTORE_B64 }}
+          KEYSTORE_PASS: ${{ secrets.KEYSTORE_PASS }}
         run: |
-          keytool -genkeypair -keystore umami.keystore -alias umami -keyalg RSA -keysize 2048 -validity 36500 \
-            -storepass umamimobile -keypass umamimobile -dname "CN=Umami Mobile, O=Umami"
+          if [ -n "$KEYSTORE_B64" ]; then
+            echo "$KEYSTORE_B64" | base64 -d > umami.keystore
+            echo "STORE_PASS=$KEYSTORE_PASS" >> $GITHUB_ENV
+            echo "Using the release signing key"
+          else
+            # Pull requests from forks have no secrets: a throwaway key is fine there
+            keytool -genkeypair -keystore umami.keystore -alias umami -keyalg RSA -keysize 2048 -validity 36500 \
+              -storepass umamimobile -keypass umamimobile -dname "CN=Umami Mobile, O=Umami"
+            echo "STORE_PASS=umamimobile" >> $GITHUB_ENV
+          fi
       - name: Build the APK
         run: |
           VERSION="${GITHUB_REF_NAME#v}"
@@ -49,7 +60,7 @@ jobs:
           dotnet publish src/UmamiMobile.Android -c Release -f net8.0-android \
             -p:ApplicationDisplayVersion=$VERSION -p:ApplicationVersion=${GITHUB_RUN_NUMBER} \
             -p:AndroidKeyStore=true -p:AndroidSigningKeyStore=$PWD/umami.keystore -p:AndroidSigningKeyAlias=umami \
-            -p:AndroidSigningKeyPass=umamimobile -p:AndroidSigningStorePass=umamimobile \
+            -p:AndroidSigningKeyPass=env:STORE_PASS -p:AndroidSigningStorePass=env:STORE_PASS \
             -p:AcceptAndroidSDKLicenses=True
           APK=$(find src/UmamiMobile.Android -name '*-Signed.apk' | head -1)
           echo "Found $APK"

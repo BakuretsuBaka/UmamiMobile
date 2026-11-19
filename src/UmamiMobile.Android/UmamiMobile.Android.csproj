@@ -6,7 +6,7 @@
     <OutputType>Exe</OutputType>
     <ApplicationId>io.github.bakuretsubaka.umamimobile</ApplicationId>
     <ApplicationVersion>1</ApplicationVersion>
-    <ApplicationDisplayVersion>1.0.0</ApplicationDisplayVersion>
+    <ApplicationDisplayVersion>1.1.1</ApplicationDisplayVersion>
     <AndroidPackageFormat>apk</AndroidPackageFormat>
     <AndroidLinkMode>None</AndroidLinkMode>
     <RootNamespace>UmamiMobile.Android</RootNamespace>

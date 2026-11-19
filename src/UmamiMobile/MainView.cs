@@ -36,6 +36,8 @@ namespace UmamiMobile
         private string _name = "theme";
         private CwavBlock _sfx = new CwavBlock();
         private byte[] _bgm;
+        private bool _dirty, _discardArmed, _busy;
+        private string _author = string.Empty;
         private AudioData _pendingAudio;
         private string _pendingName;
 
@@ -46,6 +48,7 @@ namespace UmamiMobile
         private readonly StackPanel _music = new StackPanel { Spacing = 8 };
         private readonly TextBlock _status = new TextBlock { TextWrapping = TextWrapping.Wrap, Opacity = 0.8 };
         private readonly TextBox _nameBox = new TextBox { Watermark = "Theme name" };
+        private readonly TextBox _authorBox = new TextBox { Watermark = "Author" };
         private readonly CheckBox _cropBox = new CheckBox { Content = "Crop pictures to fill the screen (off: stretch)", IsChecked = true };
         private readonly Button _saveZip = Btn("Save ZIP"), _saveBin = Btn("Save body_LZ.bin");
         private readonly Button _setTop = Btn("Top wallpaper"), _setBottom = Btn("Bottom wallpaper"), _setBoth = Btn("Both screens");
@@ -56,20 +59,22 @@ namespace UmamiMobile
         {
             var open = Btn("Open theme");
             var fresh = Btn("New");
-            fresh.Click += (s, e) => NewTheme();
+            fresh.Click += (s, e) => { if (ConfirmDiscard()) NewTheme(); };
             _setBoth.Click += async (s, e) => await Guard(SetBothScreens);
             open.Click += async (s, e) => await Guard(OpenTheme);
             _saveZip.Click += async (s, e) => await Guard(() => Save(true));
             _saveBin.Click += async (s, e) => await Guard(() => Save(false));
             _setTop.Click += async (s, e) => await Guard(() => SetWallpaper(true));
             _setBottom.Click += async (s, e) => await Guard(() => SetWallpaper(false));
-            _nameBox.TextChanged += (s, e) => _name = string.IsNullOrWhiteSpace(_nameBox.Text) ? "theme" : _nameBox.Text.Trim();
+            _nameBox.TextChanged += (s, e) => { _name = string.IsNullOrWhiteSpace(_nameBox.Text) ? "theme" : _nameBox.Text.Trim(); _dirty = true; };
+            _authorBox.TextChanged += (s, e) => { _author = (_authorBox.Text ?? string.Empty).Trim(); _dirty = true; };
 
             var header = new StackPanel { Spacing = 6, Margin = new Thickness(16, 12, 16, 4) };
             header.Children.Add(new TextBlock { Text = "Umami", FontSize = 26, FontWeight = FontWeight.Bold });
             header.Children.Add(Row(fresh, open, _saveZip, _saveBin));
             header.Children.Add(_status);
             header.Children.Add(_nameBox);
+            header.Children.Add(_authorBox);
 
             var screens = new StackPanel { Spacing = 10 };
             screens.Children.Add(new Border { Background = Brushes.Black, Child = _topImage, CornerRadius = new CornerRadius(4) });
@@ -123,6 +128,7 @@ namespace UmamiMobile
             LoadTheme(theme, "New theme", null);
             ApplyWallpaper(GradientPicture(TopVisible, ScreenHeight, 0xFF8A7A, 0x6A3D8F), true, false);
             ApplyWallpaper(GradientPicture(BottomVisible, ScreenHeight, 0x3A2E5A, 0xE8382F), false, false);
+            _dirty = false;
             SetStatus("Started a new theme.");
         }
 
@@ -169,8 +175,22 @@ namespace UmamiMobile
 
         // ---------- file handling ----------
 
+        private bool ConfirmDiscard()
+        {
+            if (!_dirty || _discardArmed)
+            {
+                _discardArmed = false;
+                return true;
+            }
+            _discardArmed = true;
+            SetStatus("You have unsaved changes. Tap again to discard them.");
+            return false;
+        }
+
         private async Task OpenTheme()
         {
+            if (!ConfirmDiscard())
+                return;
             var sp = TopLevel.GetTopLevel(this)?.StorageProvider;
             if (sp == null)
                 return;
@@ -212,13 +232,32 @@ namespace UmamiMobile
             _theme = theme;
             _archive = archive;
             _name = name;
+            _author = string.Empty;
+            if (archive?.Smdh != null)
+            {
+                try
+                {
+                    using (var ms = new MemoryStream(archive.Smdh))
+                    {
+                        var smdh = ThemeEditor.Common.SMDH.SMDH.Read(ms);
+                        var t = smdh.AppTitles.FirstOrDefault(x => x != null && !string.IsNullOrWhiteSpace(x.Publisher));
+                        if (t != null)
+                            _author = t.Publisher.Trim();
+                    }
+                }
+                catch (Exception)
+                {
+                }
+            }
             _nameBox.Text = _name;
+            _authorBox.Text = _author;
             _sfx = new CwavBlock();
             if (theme.Flags.SoundEffect && theme.CWAV != null && theme.CWAV.Length > 0)
                 _sfx.TryImport(theme.CWAV);
             _bgm = archive?.Bgm != null && archive.Bgm.Length > 0 ? archive.Bgm : null;
             _pendingAudio = null;
             Refresh();
+            _dirty = false;
             SetStatus("Loaded " + name);
         }
 
@@ -259,7 +298,8 @@ namespace UmamiMobile
                 var top = DecodeTexture(_theme.Textures?.Top, TopVisible - 12);
                 if (top != null)
                     preview = top.EncodePng();
-                output = ThemeArchive.Create(_name, compressed, _archive?.Smdh, _bgm, null, preview);
+                var icon = top?.Fit(48, 48, 48, 48, true);
+                output = ThemeArchive.Create(_name, compressed, BuildSmdh(icon), _bgm, icon?.EncodePng(), preview);
             }
 
             var sp = TopLevel.GetTopLevel(this)?.StorageProvider;
@@ -279,7 +319,45 @@ namespace UmamiMobile
                 s.SetLength(0);
                 await s.WriteAsync(output, 0, output.Length);
             }
-            SetStatus("Saved " + file.Name + (zip && _archive?.Smdh == null ? " (no info.smdh: the theme has no icon or title data yet)" : string.Empty));
+            _dirty = false;
+            _discardArmed = false;
+            SetStatus("Saved " + file.Name);
+        }
+
+        /// <summary>The info.smdh for the theme: the loaded one (or a new one) with this name and author and an icon from the top wallpaper.</summary>
+        private byte[] BuildSmdh(PixelBuffer icon)
+        {
+            ThemeEditor.Common.SMDH.SMDH smdh = null;
+            if (_archive?.Smdh != null)
+            {
+                try
+                {
+                    using (var ms = new MemoryStream(_archive.Smdh))
+                        smdh = ThemeEditor.Common.SMDH.SMDH.Read(ms);
+                }
+                catch (Exception)
+                {
+                }
+            }
+            var fresh = smdh == null;
+            smdh = smdh ?? new ThemeEditor.Common.SMDH.SMDH();
+            foreach (var t in smdh.AppTitles)
+            {
+                t.ShortDesc = _name;
+                t.LongDesc = _name;
+                t.Publisher = string.IsNullOrEmpty(_author) ? t.Publisher : _author;
+            }
+            if (fresh && icon != null)
+            {
+                smdh.LargeIcon.Encode(icon.GetBgr24Data(), 48, 48, RawTexture.DataFormat.Bgr565);
+                var small = icon.Fit(24, 24, 24, 24, true);
+                smdh.SmallIcon.Encode(small.GetBgr24Data(), 24, 24, RawTexture.DataFormat.Bgr565);
+            }
+            using (var ms = new MemoryStream())
+            {
+                ThemeEditor.Common.SMDH.SMDH.Write(smdh, ms);
+                return ms.ToArray();
+            }
         }
 
         private static async Task<byte[]> ReadAll(IStorageFile file)
@@ -364,6 +442,7 @@ namespace UmamiMobile
                 _theme.Flags.BottomFrameType = BottomFrameType.Single;
             }
             RefreshPreview();
+            _dirty = true;
         }
 
         private static PixelBuffer DecodeTexture(RawTexture tex, int visibleWidth)
@@ -379,7 +458,7 @@ namespace UmamiMobile
         private void Refresh()
         {
             var loaded = _theme != null;
-            _saveZip.IsEnabled = _saveBin.IsEnabled = _setTop.IsEnabled = _setBottom.IsEnabled = _setBoth.IsEnabled = _nameBox.IsEnabled = loaded;
+            _saveZip.IsEnabled = _saveBin.IsEnabled = _setTop.IsEnabled = _setBottom.IsEnabled = _setBoth.IsEnabled = _nameBox.IsEnabled = _authorBox.IsEnabled = loaded;
             RefreshPreview();
             BuildColors();
             BuildSounds();
@@ -430,7 +509,7 @@ namespace UmamiMobile
                 play.Click += (s, e) => PlaySound(file.WavData);
                 import.Click += async (s, e) => await Guard(() => ImportSound(kind));
                 export.Click += async (s, e) => await Guard(() => ExportSound(kind, file));
-                remove.Click += (s, e) => { file.CwavData = CwavFile.EmptyData; BuildSounds(); };
+                remove.Click += (s, e) => { file.CwavData = CwavFile.EmptyData; _dirty = true; BuildSounds(); };
                 box.Children.Add(Row(play, import, export, remove));
                 card.Child = box;
                 _sounds.Children.Add(card);
@@ -459,6 +538,7 @@ namespace UmamiMobile
             if (cwav.Length == 0)
                 throw new InvalidDataException("That file couldn't be converted to a sound effect.");
             _sfx.Sounds[kind].CwavData = cwav;
+            _dirty = true;
             BuildSounds();
             SetStatus(SoundNames[(int) kind] + " replaced.");
         }
@@ -477,8 +557,10 @@ namespace UmamiMobile
         {
             if (PlayWav == null)
                 SetStatus("Audio playback isn't available here.");
+            else if (wav == null || wav.Length == 0)
+                SetStatus("There is nothing to play.");
             else
-                PlayWav(wav);
+                try { PlayWav(wav); } catch (Exception ex) { SetStatus("Couldn't play: " + ex.Message); }
         }
 
         // ---------- music ----------
@@ -522,7 +604,7 @@ namespace UmamiMobile
                 play.Click += (s, e) => Guard(() => { PlaySound(BcstmConverter.BcstmToWav(_bgm)); return Task.CompletedTask; });
                 bcstm.Click += async (s, e) => await Guard(() => ExportMusic(false));
                 wav.Click += async (s, e) => await Guard(() => ExportMusic(true));
-                remove.Click += (s, e) => { _bgm = null; BuildMusic(); SetStatus("Background music removed."); };
+                remove.Click += (s, e) => { _bgm = null; _dirty = true; BuildMusic(); SetStatus("Background music removed."); };
                 _music.Children.Add(Row(play, bcstm, wav, remove));
             }
             else
@@ -598,6 +680,7 @@ namespace UmamiMobile
                 SetStatus("Converting music, this can take a moment…");
                 var result = await Task.Run(() => BcstmConverter.Encode(audio, options));
                 _bgm = result;
+                _dirty = true;
                 _pendingAudio = null;
                 BuildMusic();
                 SetStatus("Music added" + (result.Length > BcstmConverter.MaxThemeBgmBytes ? ", but it is too large for the HOME Menu." : "."));
@@ -694,6 +777,8 @@ namespace UmamiMobile
             var busy = false;
             void Apply(ColorRgb888 c, bool fromHex, bool fromSlider)
             {
+                if (!Equals(field.GetValue(set), c))
+                    _dirty = true;
                 busy = true;
                 field.SetValue(set, c);
                 swatch.Background = new SolidColorBrush(Color.FromRgb(c.R, c.G, c.B));
@@ -786,6 +871,9 @@ namespace UmamiMobile
 
         private async Task Guard(Func<Task> action)
         {
+            if (_busy)
+                return;
+            _busy = true;
             try
             {
                 await action();
@@ -793,6 +881,10 @@ namespace UmamiMobile
             catch (Exception ex)
             {
                 SetStatus("Error: " + ex.Message);
+            }
+            finally
+            {
+                _busy = false;
             }
         }
     }
