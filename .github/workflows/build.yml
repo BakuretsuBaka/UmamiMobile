@@ -1,0 +1,52 @@
+name: Build
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  apk:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+      - name: Install the Android workload
+        run: dotnet workload install android
+      - name: Create a signing key
+        run: |
+          keytool -genkeypair -keystore umami.keystore -alias umami -keyalg RSA -keysize 2048 -validity 36500 \
+            -storepass umamimobile -keypass umamimobile -dname "CN=Umami Mobile, O=Umami"
+      - name: Build the APK
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          [[ "$GITHUB_REF" == refs/tags/v* ]] || VERSION=0.0.0
+          dotnet publish src/UmamiMobile.Android -c Release -f net8.0-android \
+            -p:ApplicationDisplayVersion=$VERSION -p:ApplicationVersion=${GITHUB_RUN_NUMBER} \
+            -p:AndroidKeyStore=true -p:AndroidSigningKeyStore=$PWD/umami.keystore -p:AndroidSigningKeyAlias=umami \
+            -p:AndroidSigningKeyPass=umamimobile -p:AndroidSigningStorePass=umamimobile \
+            -p:AcceptAndroidSDKLicenses=True
+          APK=$(find src/UmamiMobile.Android -name '*-Signed.apk' | head -1)
+          echo "Found $APK"
+          mkdir -p dist
+          cp "$APK" "dist/UmamiMobile-$VERSION.apk"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: UmamiMobile-apk
+          path: dist/*.apk
+      - name: Publish the release
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" dist/*.apk --title "Umami Mobile ${GITHUB_REF_NAME}" --generate-notes
